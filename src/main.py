@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import os
 from streamlit_cookies_controller import CookieController
 import jwt
+from supabase import create_client, Client
 
 # Fetch variables with defaults as fallbacks
 ADMIN_HASH = st.secrets["ADMIN_PASSWORD_HASH"]
@@ -17,65 +18,197 @@ SECRET_KEY = st.secrets["JWT_SECRET"]
 
 # --- DATABASE SETUP ---
 DB_FILE = "biz_vault.db"
+if not DEBUG:
+    supabase: Client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 controller = CookieController()
 
 # --- DATABASE SETUP UPDATED ---
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS ledger
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  date TEXT, type TEXT, category TEXT, description TEXT, amount REAL)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (username TEXT PRIMARY KEY, password TEXT)''')
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS ledger
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT, type TEXT, category TEXT, description TEXT, amount REAL)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS users
+                    (username TEXT PRIMARY KEY, password TEXT)''')
 
-    # Default User: uses the hash from your .env file
-    c.execute("SELECT * FROM users WHERE username='admin'")
-    if not c.fetchone():
-        # Fallback to a safe string if environment variable is missing
-        stored_hash = ADMIN_HASH if ADMIN_HASH else "fallback_secure_hash"
-        c.execute("INSERT INTO users VALUES (?, ?)", ("admin", stored_hash))
+        # Default User: uses the hash from your .env file
+        c.execute("SELECT * FROM users WHERE username='admin'")
+        if not c.fetchone():
+            # Fallback to a safe string if environment variable is missing
+            stored_hash = ADMIN_HASH if ADMIN_HASH else "fallback_secure_hash"
+            c.execute("INSERT INTO users VALUES (?, ?)", ("admin", stored_hash))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+    else:
+        # 2. Check if admin exists
+        response = supabase.table("users").select("username").eq("username", "admin").execute()
+
+
+        # 3. If no admin found, create one
+        if not response.data:
+            stored_hash = ADMIN_HASH if ADMIN_HASH else "fallback_secure_hash"
+            supabase.table("users").insert({
+                "username": "admin",
+                "password": stored_hash
+            }).execute()
+
 
 def add_user(username, password):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
     hashed_pw = hashlib.sha256(password.encode()).hexdigest()
-    try:
-        c.execute("INSERT INTO users VALUES (?, ?)", (username, hashed_pw))
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    finally:
-        conn.close()
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            conn.execute("INSERT INTO users VALUES (?, ?)", (username, hashed_pw))
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+    else:
+        # Supabase Logic
+        response = supabase.table("users").insert({"username": username, "password": hashed_pw}).execute()
+        return len(response.data) > 0
 
 def delete_user(username):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM users WHERE username=?", (username,))
-    conn.commit()
-    conn.close()
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("DELETE FROM users WHERE username=?", (username,))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("users").delete().eq("username", username).execute()
 
 def check_login(user, pw):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
     hashed_pw = hashlib.sha256(pw.encode()).hexdigest()
-    c.execute("SELECT * FROM users WHERE username=? AND password=?", (user, hashed_pw))
-    result = c.fetchone()
-    conn.close()
-    return result
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE username=? AND password=?", (user, hashed_pw))
+        result = c.fetchone()
+        conn.close()
+        return result
+    else:
+        # Supabase Logic
+        response = supabase.table("users").select("*").eq("username", user).eq("password", hashed_pw).execute()
+        return response.data[0] if response.data else None
 
 def update_user_password(username, new_password):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
     hashed_pw = hashlib.sha256(new_password.encode()).hexdigest()
-    c.execute("UPDATE users SET password=? WHERE username=?", (hashed_pw, username))
-    conn.commit()
-    conn.close()
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("UPDATE users SET password=? WHERE username=?", (hashed_pw, username))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("users").update({"password": hashed_pw}).eq("username", username).execute()
+
+def get_ledger_data():
+    """Centralized fetch for all ledger entries."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM ledger", conn)
+        conn.close()
+    else:
+        response = supabase.table("ledger").select("*").execute()
+        df = pd.DataFrame(response.data)
+
+    if not df.empty:
+        df['date'] = pd.to_datetime(df['date'])
+    return df
+
+def get_ledger_summary(df):
+    """Calculates high-level metrics for the Overview tab."""
+    if df.empty:
+        return 0.0, 0.0, 0.0, 0.0
+
+    inbound = df[df['type'] == 'Inbound']['amount'].sum()
+    outbound = df[df['type'] == 'Outbound']['amount'].sum()
+    net = inbound - outbound
+    margin = (net / inbound * 100) if inbound > 0 else 0
+    return inbound, outbound, net, margin
+
+def add_ledger_entry(date, t_type, category, description, amount):
+    """Inserts a new transaction into the ledger."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute(
+            "INSERT INTO ledger (date, type, category, description, amount) VALUES (?,?,?,?,?)",
+            (date, t_type, category, description, amount)
+        )
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("ledger").insert({
+            "date": date,
+            "type": t_type,
+            "category": category,
+            "description": description,
+            "amount": amount
+        }).execute()
+
+def delete_ledger_entry(entry_id):
+    """Deletes a transaction by its ID."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("DELETE FROM ledger WHERE id=?", (entry_id,))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("ledger").delete().eq("id", entry_id).execute()
+
+def delete_ledger_entry(entry_id):
+    """
+    Deletes a transaction from the ledger by its unique ID.
+    Supports both Local SQLite (Debug) and Supabase (Production).
+    """
+    if DEBUG:
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ledger WHERE id = ?", (entry_id,))
+            conn.commit()
+
+            # Check if a row was actually deleted
+            if cursor.rowcount == 0:
+                st.error(f"Entry ID {entry_id} not found in local database.")
+                return False
+
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Local Delete Error: {e}")
+            return False
+    else:
+        # Supabase Logic
+        try:
+            # eq("id", entry_id) targets the specific row
+            response = supabase.table("ledger").delete().eq("id", entry_id).execute()
+
+            # Supabase returns the deleted data in response.data
+            if not response.data:
+                st.error(f"Entry ID {entry_id} not found in Supabase.")
+                return False
+
+            return True
+        except Exception as e:
+            st.error(f"Production Delete Error: {e}")
+            return False
+
+def get_user_list():
+    """Fetches all registered usernames for the Directory."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT username FROM users", conn)
+        conn.close()
+    else:
+        response = supabase.table("users").select("username").execute()
+        df = pd.DataFrame(response.data)
+    return df
 
 init_db()
 
@@ -322,11 +455,9 @@ def push_to_ledger_dialog(weight, p_time, final_price):
             # The specific description format you requested
             desc = f"Print: {print_name} ({weight}g / {p_time}h)"
 
-            conn = sqlite3.connect(DB_FILE)
-            conn.execute("INSERT INTO ledger (date, type, category, description, amount) VALUES (?,?,?,?,?)",
-                        (datetime.now().strftime("%Y-%m-%d"), "Inbound", "Product Sale", desc, round(final_price, 2)))
-            conn.commit()
-            conn.close()
+            add_ledger_entry(datetime.now().strftime("%Y-%m-%d"), "Inbound", "Product Sale", desc, round(final_price, 2))
+
+
             st.toast("Transaction recorded!", icon="✅")
             time.sleep(1)
             st.rerun()
@@ -341,7 +472,7 @@ def confirm_delete_dialog(transaction_id):
     word = st.session_state.temp_word
     user_input = st.text_input(f"Type **{word}** to authorize:")
     if st.button("Delete", type="primary", width='stretch', disabled=(user_input != word)):
-        conn = sqlite3.connect(DB_FILE); conn.execute("DELETE FROM ledger WHERE id=?", (int(transaction_id),)); conn.commit(); conn.close()
+        delete_ledger_entry(transaction_id)
         if 'temp_word' in st.session_state: del st.session_state.temp_word
         st.rerun()
 
@@ -427,7 +558,7 @@ def add_user_dialog():
                 else:
                     st.error("ID collision: User exists.")
 
-    if st.button("Close"):
+    if st.button("Close", width="stretch"):
         st.session_state.show_add_user = False # CLEAR TRIGGER
         st.rerun()
 
@@ -439,73 +570,63 @@ if st.session_state.current_user == "admin":
 
 all_tabs = st.tabs(tabs_to_show)
 
-# Standard Tabs Logic
 with all_tabs[0]: # Overview
-    conn = sqlite3.connect(DB_FILE); df = pd.read_sql_query("SELECT * FROM ledger", conn); conn.close()
+    df = get_ledger_data()
+
     if df.empty:
-        st.info("No data yet.")
+        st.info("No data yet. Head over to the Calculator to log your first print!")
     else:
-        df['date'] = pd.to_datetime(df['date'])
-        inbound = df[df['type'] == 'Inbound']['amount'].sum()
-        outbound = df[df['type'] == 'Outbound']['amount'].sum()
-        net = inbound - outbound
+        # 1. Get Metrics
+        rev, exp, net, margin = get_ledger_summary(df)
 
-        # Calculate Profit Margin
-        profit_margin = (net / inbound * 100) if inbound > 0 else 0
-
-        # Define brand colors for dynamic UI elements
-        color_green = "#2ECC40"
-        color_red = "#E01B24"
-
+        # 2. Display Metrics Row
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Revenue", f"{inbound:,.2f} RON")
-        m2.metric("Expenses", f"{outbound:,.2f} RON")
+        m1.metric("Revenue", f"{rev:,.2f} RON")
+        m2.metric("Expenses", f"{exp:,.2f} RON")
 
-        # Color-coded Net Profit
         m3.metric("Net Profit", f"{net:,.2f} RON",
-                  delta=f"{'Positive' if net >= 0 else 'Negative'}",
+                  delta="Positive" if net >= 0 else "Negative",
                   delta_color="normal" if net >= 0 else "inverse")
 
-        # Color-coded Profit Margin
-        m4.metric("Profit Margin", f"{profit_margin:.1f}%",
-                  delta=f"{'Healthy' if profit_margin > 20 else 'Low'}",
-                  delta_color="normal" if profit_margin > 20 else "inverse")
+        m4.metric("Profit Margin", f"{margin:.1f}%",
+                  delta="Healthy" if margin > 20 else "Low",
+                  delta_color="normal" if margin > 20 else "inverse")
 
-        # Visual Trend with brand-aligned coloring
+        # 3. Charting Logic
         df_sorted = df.sort_values('date')
         df_sorted['adj'] = df_sorted.apply(lambda x: x['amount'] if x['type'] == 'Inbound' else -x['amount'], axis=1)
         df_sorted['balance'] = df_sorted['adj'].cumsum()
 
-        trend_color = color_green if net >= 0 else color_red
+        # Dynamic brand colors
+        trend_color = "#2ECC40" if net >= 0 else "#E01B24"
+        fill_color = "rgba(46, 204, 64, 0.2)" if net >= 0 else "rgba(224, 27, 36, 0.2)"
+
         fig = go.Figure(go.Scatter(
-            x=df_sorted['date'],
-            y=df_sorted['balance'],
-            fill='tozeroy',
-            line=dict(color=trend_color, width=3),
-            fillcolor=f"rgba({46 if net >= 0 else 224}, {204 if net >= 0 else 27}, {64 if net >= 0 else 36}, 0.2)"
+            x=df_sorted['date'], y=df_sorted['balance'],
+            fill='tozeroy', line=dict(color=trend_color, width=3),
+            fillcolor=fill_color
         ))
 
         fig.update_layout(
-            paper_bgcolor='#122023',
-            plot_bgcolor='#122023',
-            height=350,
-            margin=dict(l=0,r=0,t=10,b=0),
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            height=350, margin=dict(l=0, r=0, t=10, b=0),
             xaxis=dict(showgrid=False, color="#FFFFFF"),
-            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="#FFFFFF")
+            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="#FFFFFF"),
+            hovermode="x unified"
         )
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
-        # Branded Forecast Section
+        # 4. Branded Forecast
         st.markdown(f"""
-        <div style="padding:15px; border-radius:10px; border-left: 5px solid {color_green}; background-color: rgba(46, 204, 64, 0.05);">
-            <h3 style="margin:0; color:{color_green};">📈 Next Month Forecast</h3>
-            <p style="margin:5px 0 0 0;">To maintain your current <b>{profit_margin:.1f}%</b> margin with a 10% target revenue increase,
-            aim for <b>{(inbound * 1.1):,.2f} RON</b> in total sales.</p>
+        <div style="padding:15px; border-radius:10px; border-left: 5px solid #2ECC40; background-color: rgba(46, 204, 64, 0.05);">
+            <h3 style="margin:0; color:#2ECC40;">📈 Performance Insight</h3>
+            <p style="margin:5px 0 0 0;">Maintain your <b>{margin:.1f}%</b> margin by targeting
+            <b>{(rev * 1.1):,.2f} RON</b> in sales next month.</p>
         </div>
         """, unsafe_allow_html=True)
 
 with all_tabs[1]: # Transactions
-    conn = sqlite3.connect(DB_FILE); df = pd.read_sql_query("SELECT * FROM ledger", conn); conn.close()
+    df = get_ledger_data()
     if not df.empty:
         def color_t(v): return "background-color: rgba(46,204,64,0.12); color: #2ECC40;" if v=="Inbound" else "background-color: rgba(224,27,36,0.12); color: #E01B24;"
         st.dataframe(df.sort_values('id', ascending=False).style.map(color_t, subset=['type']), width='stretch', hide_index=True)
@@ -522,7 +643,7 @@ with all_tabs[2]: # Quick Entry
     c3, c4, c5 = st.columns(3); cat = c3.selectbox("Category", options=in_cats if t_type=="Inbound" else out_cats); desc = c4.text_input("Description"); amt = c5.number_input("Amount (RON)", min_value=0.0)
     if st.button("Confirm & Save", type="primary", width='stretch'):
         if desc and amt > 0:
-            conn = sqlite3.connect(DB_FILE); conn.execute("INSERT INTO ledger (date, type, category, description, amount) VALUES (?,?,?,?,?)", (t_date.strftime("%Y-%m-%d"), t_type, cat, desc, amt)); conn.commit(); conn.close()
+            add_ledger_entry(t_date.strftime("%Y-%m-%d"), t_type, cat, desc, amt)
             st.toast("Saved!", icon="🚀"); time.sleep(1); st.rerun()
 
 with all_tabs[3]: # 🖨️ Cost Calculator
@@ -632,7 +753,6 @@ with all_tabs[3]: # 🖨️ Cost Calculator
 if st.session_state.current_user == "admin":
     with all_tabs[4]:
         # --- 1. DIALOG ORCHESTRATOR ---
-        # This handles the "one dialog at a time" rule by using state as the trigger
         if st.session_state.get("active_manage_user"):
             user_management_dialog(st.session_state.active_manage_user)
 
@@ -645,25 +765,76 @@ if st.session_state.current_user == "admin":
             st.subheader("👥 System Directory")
         with col_add_btn:
             st.write("<br>", unsafe_allow_html=True)
-            # Instead of calling the function, we set a state flag
-            if st.button("➕ New User", type="primary", width='stretch'):
+            if st.button("➕ New User", type="primary", use_container_width=True):
                 st.session_state.show_add_user = True
                 st.rerun()
 
         # --- 3. DIRECTORY LIST ---
-        conn = sqlite3.connect(DB_FILE); users_df = pd.read_sql_query("SELECT username FROM users", conn); conn.close()
+        users_df = get_user_list()
         st.markdown('<hr style="margin-top:0; border: 1px solid rgba(46, 204, 64, 0.2)">', unsafe_allow_html=True)
 
-        for _, row in users_df.iterrows():
-            uname = row['username']
-            is_admin = uname == "admin"
-            with st.container():
-                c_icon, c_name, c_role, c_action = st.columns([0.5, 3, 2, 1.5])
-                c_icon.write("⚡" if is_admin else "👤")
-                c_name.write(f"**{uname}**")
-                c_role.markdown(f"<span style='color: #2ECC40; opacity: 0.6; font-size: 0.8rem;'>{ 'MASTER' if is_admin else 'STAFF' }</span>", unsafe_allow_html=True)
+        if users_df.empty:
+            st.warning("No users found. This shouldn't happen if admin exists!")
+        else:
+            for _, row in users_df.iterrows():
+                uname = row['username']
+                is_admin = (uname == "admin")
 
-                if c_action.button("Edit", key=f"btn_{uname}", width='stretch'):
-                    st.session_state.active_manage_user = uname
+                with st.container():
+                    c_icon, c_name, c_role, c_action = st.columns([0.5, 3, 2, 1.5])
+
+                    # Visual Identity
+                    c_icon.write("⚡" if is_admin else "👤")
+                    c_name.write(f"**{uname}**")
+
+                    role_label = "MASTER" if is_admin else "STAFF"
+                    c_role.markdown(
+                        f"<span style='color: #2ECC40; opacity: 0.6; font-size: 0.8rem; letter-spacing: 1px;'>{role_label}</span>",
+                        unsafe_allow_html=True
+                    )
+
+                    # Edit Action
+                    if c_action.button("Edit", key=f"btn_{uname}", use_container_width=True):
+                        st.session_state.active_manage_user = uname
+                        st.rerun()
+
+                    st.markdown('<hr style="margin:0.2rem 0; opacity:0.05">', unsafe_allow_html=True)
+
+    # --- DATABASE BACKUP (ONLY VISIBLE IN DEBUG/LOCAL) ---
+    if DEBUG:
+        with st.expander("💾 Local Database Management"):
+            st.info("Direct DB access is disabled in Production (Supabase).")
+            # ... keep your existing Download/Upload code here ...
+    with st.expander("💾 Database Management (Backup/Restore)"):
+        st.warning("Handling the database file directly can corrupt your ledger if interrupted.")
+
+        col_dl, col_ul = st.columns(2)
+
+        with col_dl:
+            st.markdown("#### Export Data")
+            st.write("Download the current `biz_vault.db` file.")
+            if os.path.exists(DB_FILE):
+                with open(DB_FILE, "rb") as f:
+                    st.download_button(
+                        label="📥 Download Database",
+                        data=f,
+                        file_name=f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
+                        mime="application/octet-stream",
+                        use_container_width=True
+                    )
+            else:
+                st.error("Database file not found.")
+
+        with col_ul:
+            st.markdown("#### Import Data")
+            st.write("Replace the current database with a backup file.")
+            uploaded_db = st.file_uploader("Upload .db file", type=["db"])
+
+            if uploaded_db is not None:
+                if st.button("🔥 Overwrite Current DB", type="secondary", use_container_width=True):
+                    # Save the uploaded file as the new DB_FILE
+                    with open(DB_FILE, "wb") as f:
+                        f.write(uploaded_db.getbuffer())
+                    st.success("Database restored successfully!")
+                    time.sleep(1)
                     st.rerun()
-                st.markdown('<hr style="margin:0.2rem 0; opacity:0.05">', unsafe_allow_html=True)
