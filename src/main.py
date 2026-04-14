@@ -421,58 +421,6 @@ with all_tabs[0]: # Overview
             </div>
             """, unsafe_allow_html=True)
 
-with all_tabs[4]: # Transactions
-    st.markdown("### 📑 Transaction Ledger")
-    df = db.ledger_get_data()
-
-    if not df.empty:
-        # 1. Explicit Filtering Interface
-        with st.container(border=True):
-            f1, f2 = st.columns([2, 1])
-            search_desc = f1.text_input("🔍 Search Description", placeholder="Filter by transaction details...")
-            filter_type = f2.selectbox("Type", ["All", "Inbound", "Outbound"])
-
-            f3, f4 = st.columns([2, 1])
-            unique_cats = sorted(df['category'].unique().tolist())
-            filter_cats = f3.multiselect("Categories", options=unique_cats)
-
-            min_d, max_d = df['date'].min().date(), df['date'].max().date()
-            date_range = f4.date_input("Date Range", value=(min_d, max_d))
-
-        filtered_df = df.copy()
-
-        if search_desc:
-            filtered_df = filtered_df[filtered_df['description'].str.contains(search_desc, case=False, na=False)]
-        if filter_type != "All":
-            filtered_df = filtered_df[filtered_df['type'] == filter_type]
-        if filter_cats:
-            filtered_df = filtered_df[filtered_df['category'].isin(filter_cats)]
-
-        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-            start_date, end_date = date_range
-            filtered_df = filtered_df[(filtered_df['date'].dt.date >= start_date) & (filtered_df['date'].dt.date <= end_date)]
-
-        def color_t(v):
-            return "background-color: rgba(46,204,64,0.12); color: #2ECC40;" if v=="Inbound" else "background-color: rgba(224,27,36,0.12); color: #E01B24;"
-
-        # 2. Render Styled Ledger
-        st.dataframe(
-            filtered_df.sort_values('date', ascending=False).style.map(color_t, subset=['type']),
-            width="stretch",
-            hide_index=True
-        )
-
-        # 3. Management Section (Glass Card)
-        st.write("<br>", unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown("<h4 style='margin:0 0 1rem 0; color:#FFFFFF;'>🗑️ Entry Management</h4>", unsafe_allow_html=True)
-            c_id, c_btn = st.columns([3, 1])
-            id_in = c_id.number_input("Transaction ID to remove:", step=1, min_value=0, key="ledger_del_id")
-            if c_btn.button("Purge Entry", type="secondary", width="stretch", key="ledger_del_btn"):
-                confirm_delete_dialog(id_in)
-    else:
-        st.info("No transaction history available.")
-
 with all_tabs[1]: # Current Orders
     st.markdown("### 📦 Active Order Management")
 
@@ -523,14 +471,6 @@ with all_tabs[1]: # Current Orders
     else:
         st.info("No active orders found in the queue.")
 
-with all_tabs[3]: # Quick Entry
-    in_cats, out_cats = ["Product Sale", "Custom Print", "Donation", "Subscription", "Other"], ["Filament", "Product Part", "Transport", "Software", "Marketing", "Rent", "Cash Out", "Salary", "Misc"]
-    c1, c2 = st.columns(2); t_type = c1.radio("Direction", ["Inbound", "Outbound"], horizontal=True); t_date = c2.date_input("Date", datetime.now())
-    c3, c4, c5 = st.columns(3); cat = c3.selectbox("Category", options=in_cats if t_type=="Inbound" else out_cats); desc = c4.text_input("Description"); amt = c5.number_input("Amount (RON)", min_value=0.0)
-    if st.button("Confirm & Save", type="primary", width='stretch'):
-        if desc and amt > 0:
-            db.ledger_add_entry(t_date.strftime("%Y-%m-%d"), t_type, cat, desc, amt)
-            st.toast("Saved!", icon="🚀"); time.sleep(1); st.rerun()
 
 with all_tabs[2]: # 🖨️ Cost Calculator
     st.markdown("### 🖨️ 3D Print Price Calculator")
@@ -634,6 +574,67 @@ with all_tabs[2]: # 🖨️ Cost Calculator
     # Trigger the dialog instead of a direct save
     if st.button("🚀 Push to Ledger", width="stretch", type="primary"):
         push_to_ledger_dialog(f_weight, p_time, suggested_price)
+
+with all_tabs[3]: # Quick Entry
+    in_cats, out_cats = ["Product Sale", "Custom Print", "Donation", "Subscription", "Other"], ["Filament", "Product Part", "Transport", "Software", "Marketing", "Rent", "Cash Out", "Salary", "Misc"]
+    c1, c2 = st.columns(2); t_type = c1.radio("Direction", ["Inbound", "Outbound"], horizontal=True); t_date = c2.date_input("Date", datetime.now())
+    c3, c4, c5 = st.columns(3); cat = c3.selectbox("Category", options=in_cats if t_type=="Inbound" else out_cats); desc = c4.text_input("Description"); amt = c5.number_input("Amount (RON)", min_value=0.0)
+    if st.button("Confirm & Save", type="primary", width='stretch'):
+        if desc and amt > 0:
+            db.ledger_add_entry(t_date.strftime("%Y-%m-%d"), t_type, cat, desc, amt)
+            st.toast("Saved!", icon="🚀"); time.sleep(1); st.rerun()
+
+with all_tabs[4]: # Transactions
+    st.markdown("### 📑 Transaction Ledger")
+    df = db.ledger_get_data()
+
+    if not df.empty:
+        # 1. Explicit Filtering Interface
+        with st.container(border=True):
+            f1, f2 = st.columns([2, 1])
+            search_desc = f1.text_input("🔍 Search Description", placeholder="Filter by transaction details...")
+            filter_type = f2.selectbox("Type", ["All", "Inbound", "Outbound"])
+
+            f3, f4 = st.columns([2, 1])
+            unique_cats = sorted(df['category'].unique().tolist())
+            filter_cats = f3.multiselect("Categories", options=unique_cats)
+
+            min_d, max_d = df['date'].min().date(), df['date'].max().date()
+            date_range = f4.date_input("Date Range", value=(min_d, max_d))
+
+        filtered_df = df.copy()
+
+        if search_desc:
+            filtered_df = filtered_df[filtered_df['description'].str.contains(search_desc, case=False, na=False)]
+        if filter_type != "All":
+            filtered_df = filtered_df[filtered_df['type'] == filter_type]
+        if filter_cats:
+            filtered_df = filtered_df[filtered_df['category'].isin(filter_cats)]
+
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = filtered_df[(filtered_df['date'].dt.date >= start_date) & (filtered_df['date'].dt.date <= end_date)]
+
+        def color_t(v):
+            return "background-color: rgba(46,204,64,0.12); color: #2ECC40;" if v=="Inbound" else "background-color: rgba(224,27,36,0.12); color: #E01B24;"
+
+        # 2. Render Styled Ledger
+        st.dataframe(
+            filtered_df.sort_values('date', ascending=False).style.map(color_t, subset=['type']),
+            width="stretch",
+            hide_index=True
+        )
+
+        # 3. Management Section (Glass Card)
+        st.write("<br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("<h4 style='margin:0 0 1rem 0; color:#FFFFFF;'>🗑️ Entry Management</h4>", unsafe_allow_html=True)
+            c_id, c_btn = st.columns([3, 1])
+            id_in = c_id.number_input("Transaction ID to remove:", step=1, min_value=0, key="ledger_del_id")
+            if c_btn.button("Purge Entry", type="secondary", width="stretch", key="ledger_del_btn"):
+                confirm_delete_dialog(id_in)
+    else:
+        st.info("No transaction history available.")
 
 # --- USER MANAGEMENT TAB (ADMIN ONLY) ---
 if st.session_state.current_user == "admin":
