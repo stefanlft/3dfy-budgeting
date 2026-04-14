@@ -5,7 +5,9 @@ import plotly.graph_objects as go
 import random
 import numpy as np
 import time
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import make_pipeline
 import hashlib
 from datetime import datetime, timedelta
 import os
@@ -268,19 +270,39 @@ with all_tabs[0]: # Overview
         pred_days = st.slider("Forecast Horizon (Days)", min_value=7, max_value=365, value=14)
 
         projected_profit = 0.0
-        if len(df_sorted) > 1:
-            # Prepare data: X is days as ordinal, Y is cumulative balance
-            x = df_sorted['date'].map(datetime.toordinal).values.reshape(-1, 1)
+        if len(df_sorted) > 2:
+            # --- SMART FEATURE ENGINEERING ---
+            # We use ordinal date and day of week to capture seasonality
+            df_sorted['day_of_week'] = df_sorted['date'].dt.dayofweek
+            x = np.column_stack([
+                df_sorted['date'].map(datetime.toordinal).values,
+                df_sorted['day_of_week'].values
+            ])
             y = df_sorted['balance'].values
 
-            # Use scikit-learn for Linear Regression
-            model = LinearRegression().fit(x, y)
+            # --- RECENCY BIAS (The "Smarter" Part) ---
+            # Calculate weights: give more weight to recent transactions
+            # The most recent data point has weight 1.0, older data decays exponentially
+            max_date = df_sorted['date'].map(datetime.toordinal).max()
+            # Decay factor: 0.01 means data from 100 days ago has ~36% influence
+            weights = np.exp(-0.01 * (max_date - x[:, 0]))
+
+            # Use Ridge Regression with Polynomial Features
+            # Ridge (L2 regularization) prevents the model from overreacting to outliers
+            model = make_pipeline(PolynomialFeatures(degree=2), Ridge(alpha=1.0))
+            model.fit(x, y, ridge__sample_weight=weights)
 
             # Generate future dates based on user selection
             last_date = df_sorted['date'].max()
+
             future_dates = [last_date + timedelta(days=i) for i in range(1, pred_days + 1)]
-            future_x = np.array([d.toordinal() for d in future_dates]).reshape(-1, 1)
+
+            future_x = np.column_stack([
+                [d.toordinal() for d in future_dates],
+                [d.weekday() for d in future_dates]
+            ])
             future_y = model.predict(future_x)
+
 
             # Calculate expected profit over the selected period based on the trend
             projected_profit = future_y[-1] - y[-1]
