@@ -424,52 +424,61 @@ with all_tabs[0]: # Overview
 with all_tabs[1]: # Current Orders
     st.markdown("### 📦 Active Order Management")
 
-    if st.button("➕ Register New Order", type="primary", width="stretch"):
-        register_order_dialog()
+    c_btn, c_chk = st.columns([3, 1])
+    with c_btn:
+        if st.button("➕ Register New Order", type="primary", width="stretch"):
+            register_order_dialog()
+    with c_chk:
+        show_completed = st.checkbox("Show Previous Orders", help="Include fulfilled orders in the list")
 
     st.divider()
-    orders_data = db.orders_get_active()
+    orders_data = db.orders_get_all() if show_completed else db.orders_get_active()
     if not orders_data.empty:
         status_flow = ["Placed", "Printing", "Packing", "Delivering"]
-        for _, row in orders_data.iterrows():
+        for _, row in orders_data.sort_values('id', ascending=False).iterrows():
             status = row['status']
-            status_colors = {"Placed": "#888", "Printing": "#2196F3", "Packing": "#FF9800", "Delivering": "#9C27B0"}
+            status_colors = {"Placed": "#888", "Printing": "#2196F3", "Packing": "#FF9800", "Delivering": "#9C27B0", "Completed": "#2ECC40"}
 
-            st.markdown(f"""
-                <div class="glass-card">
-                    <div style="display: flex; justify-content: space-between; align-items: start;">
-                        <div>
-                            <h4 style="margin:0; color:#2ECC40;">{row['customer_name']}</h4>
-                            <p style="margin:0; font-size:0.9rem; opacity:0.8;">{row['product']}</p>
+            with st.container(border=True):
+                col_info, col_btns = st.columns([4, 1])
+
+                with col_info:
+                    st.markdown(f"""
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <h2 style="margin:0; color:#2ECC40; font-size: 1.8rem; letter-spacing: -0.5px;">{row['customer_name']}</h2>
+                            <span style="background:{status_colors.get(status, '#555')}; padding:6px 14px; border-radius:30px; font-size:0.75rem; font-weight:800; color:white; letter-spacing: 0.5px;">{status.upper()}</span>
                         </div>
-                        <span style="background:{status_colors.get(status, '#555')}; padding:4px 12px; border-radius:20px; font-size:0.7rem; font-weight:bold;">{status.upper()}</span>
-                    </div>
-                    <div style="margin-top:10px; font-size:0.85rem; color:#888;">
-                        📅 Due: {row['deadline']} | 📞 {row['contact']} | 📍 {row['location']}
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+                        <p style="margin: 4px 0 12px 0; font-size: 1.1rem; color: #888;">👤 {row['contact']}</p>
+                        <div style="margin: 15px 0; padding: 15px; background: rgba(255,255,255,0.01); border-left: 4px solid rgba(46, 204, 64, 0.4); border-radius: 4px; font-size: 1rem; line-height: 1.5; color: #EEE;">
+                            {row['product'].replace('\\n', '<br>')}
+                        </div>
+                        <div style="display: flex; gap: 25px; align-items: baseline; margin-top: 15px;">
+                            <span style="font-size: 1.4rem; font-weight: 700; color: #FFFFFF;">{row['price']:.2f} <small style="font-size: 0.8rem; opacity: 0.6;">RON</small></span>
+                            <span style="font-size: 0.95rem; opacity: 0.9;">🚚 <b>{row['delivery_method']}</b> — {row['location']}</span>
+                        </div>
+                        <p style="margin: 10px 0 0 0; font-size: 0.85rem; color: #666; font-weight: 500;">⌛ DEADLINE: {row['deadline']}</p>
+                    """, unsafe_allow_html=True)
 
-            cols = st.columns([5, 1, 1])
-            with cols[1]:
-                    # Logic to move to next status or fulfill
-                    if status in status_flow:
-                        current_idx = status_flow.index(status)
-                        if current_idx < len(status_flow) - 1:
-                            next_status = status_flow[current_idx + 1]
-                            if st.button(f"Next: {next_status}", key=f"nxt_{row['id']}", width="stretch"):
-                                db.orders_update_status(row['id'], next_status)
-                                st.rerun()
-                        else:
-                            if st.button("Fulfill", key=f"ful_{row['id']}", type="primary", width="stretch"):
-                                fulfill_order_dialog(row['id'], row['product'], row['price'])
-            with cols[2]:
-                    if st.button("🗑️", key=f"can_{row['id']}", type="secondary", width="stretch"):
-                        db.orders_delete_entry(row['id'])
-                        st.rerun()
-            st.write("<br>", unsafe_allow_html=True)
+                with col_btns:
+                    if status != "Completed":
+                        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+                        # Workflow Actions
+                        if status in status_flow:
+                            current_idx = status_flow.index(status)
+                            if current_idx < len(status_flow) - 1:
+                                next_status = status_flow[current_idx + 1]
+                                if st.button(f"{next_status} ➡️", key=f"nxt_{row['id']}", use_container_width=True):
+                                    db.orders_update_status(row['id'], next_status)
+                                    st.rerun()
+                            else:
+                                if st.button("✅ Fulfill", key=f"ful_{row['id']}", type="primary", use_container_width=True):
+                                    fulfill_order_dialog(row['id'], row['product'], row['price'])
+
+                        if st.button("🗑️ Cancel", key=f"can_{row['id']}", type="secondary", use_container_width=True):
+                            db.orders_delete_entry(row['id'])
+                            st.rerun()
     else:
-        st.info("No active orders found in the queue.")
+        st.info("No orders found matching your selection.")
 
 
 with all_tabs[2]: # 🖨️ Cost Calculator

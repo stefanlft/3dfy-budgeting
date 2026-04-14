@@ -192,6 +192,17 @@ def user_get_list():
         df = pd.DataFrame(response.data)
     return df
 
+def orders_get_all():
+    """Fetches all orders regardless of status."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM orders", conn)
+        conn.close()
+    else:
+        response = supabase.table("orders").select("*").execute()
+        df = pd.DataFrame(response.data)
+    return df
+
 def orders_get_active():
     """Fetches all orders that are not marked as Completed."""
     if DEBUG:

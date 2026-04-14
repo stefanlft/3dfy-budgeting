@@ -13,7 +13,7 @@ def apply_custom_css():
         [data-testid="stHeader"] { display: none !important; }
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
-        .block-container { padding-top: 2rem !important; }
+        .block-container { padding-top: 1.5rem !important; max-width: 1300px !important; }
         .stApp { background-color: #122023 !important; color: #FFFFFF !important; }
         [data-testid="stSidebar"] { display: none; }
 
@@ -23,14 +23,15 @@ def apply_custom_css():
 
         /* Custom Card Component */
         .glass-card, div[data-testid="stVerticalBlockBorderWrapper"] > div {
-            background: rgba(255, 255, 255, 0.03);
+            background: rgba(255, 255, 255, 0.03) !important;
+            backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
+            border-radius: 16px !important;
             padding: 1.5rem;
             margin-bottom: 1rem;
-            transition: transform 0.2s ease;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        .glass-card:hover { border-color: rgba(46, 204, 64, 0.3); }
+        .glass-card:hover { border-color: rgba(46, 204, 64, 0.4) !important; transform: translateY(-2px); }
 
         /* KPI Styles */
         .kpi-box { text-align: center; padding: 10px; }
