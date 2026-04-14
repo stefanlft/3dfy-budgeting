@@ -3,11 +3,13 @@ import config
 import pandas as pd
 import sqlite3
 import hashlib
+import os
 
 
 DEBUG = False
 
-DB_FILE = "biz_vault.db"
+# Ensure the database path is consistent regardless of where Streamlit is launched from
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "biz_vault.db")
 if not config.DEBUG_MODE:
     supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
 

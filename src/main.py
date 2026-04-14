@@ -18,35 +18,32 @@ import ui_styles
 import auth_utils
 import config
 
-controller = CookieController()
+controller = CookieController(key="3dfy_auth_ctx")
 db.init_db(config.DEBUG_MODE)
 ui_styles.init_page(config.DEBUG_MODE)
 ui_styles.apply_custom_css()
 
-if config.DEBUG_MODE:
-    st.session_state.authenticated = True
-    st.session_state.current_user = "admin"
-
 # --- PERSISTENT AUTH LOGIC ---
-# The CookieController needs a moment to sync with the browser.
-# It returns None during handshake, and a dict (can be empty) once ready.
+# 1. Wait for component handshake
 if controller.getAll() is None:
-    time.sleep(0.5) # Increased for server-side latency
+    time.sleep(0.2)
     st.rerun()
 
-if 'authenticated' not in st.session_state:
-    token = controller.get('remember_me')
-    if token:
-        user_from_token = auth_utils.decode_access_token(token)
-        if user_from_token:
-            st.session_state.authenticated = True
-            st.session_state.current_user = user_from_token
-        else:
-            st.session_state.authenticated = False
-            controller.remove('remember_me')
-    else:
-        st.session_state.authenticated = False
+# 2. Handle Auto-Login (if not already authenticated in session)
+if not st.session_state.get('authenticated'):
+    st.session_state.authenticated = False
 
+    if config.DEBUG_MODE:
+        st.session_state.authenticated = True
+        st.session_state.current_user = "admin"
+    else:
+        token = controller.get('remember_me')
+        if token:
+            user_from_token = auth_utils.decode_access_token(token)
+            if user_from_token:
+                st.session_state.authenticated = True
+                st.session_state.current_user = user_from_token
+                st.rerun()
 
 if not st.session_state.authenticated:
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -66,13 +63,16 @@ if not st.session_state.authenticated:
                 if remember_me:
                     token = auth_utils.create_access_token(user)
                     controller.set('remember_me', token, max_age=2592000)
-                    # Higher sleep ensures the JS component has time to
-                    # write the cookie before the rerun interrupts the script.
-                    time.sleep(0.5)
+                    time.sleep(0.6) # Slightly more time for server-side persistence
                 st.rerun()
             else:
                 st.error("Invalid credentials")
-        st.caption(f"System Version: {config.VERSION}")
+
+        # Diagnostic Info
+        cookie_status = "✅" if controller.get('remember_me') else "❌"
+        status_info = f"v{config.VERSION} | Cookie: {cookie_status}"
+        if not config.HAS_JWT_SECRET: status_info += " | ⚠️ Secret Missing"
+        st.caption(status_info)
     st.stop()
 
 # --- HEADER & LOGOUT ---

@@ -7,4 +7,7 @@ JWT_SECRET = st.secrets.get("JWT_SECRET")
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 DEFAULT_PREDICTION_DAYS = st.secrets.get("DEFAULT_PREDICTION_DAYS")
-VERSION = "1.1.2-stable"
+
+VERSION = "1.1.3-stable"
+
+HAS_JWT_SECRET = JWT_SECRET is not None
