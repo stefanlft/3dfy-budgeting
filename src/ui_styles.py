@@ -15,10 +15,31 @@ def apply_custom_css():
         footer {visibility: hidden;}
         .block-container { padding-top: 2rem !important; }
         .stApp { background-color: #122023 !important; color: #FFFFFF !important; }
-        [data-testid="stSidebar"] {display: none;}
+        [data-testid="stSidebar"] { display: none; }
+
+        /* Typography & Headings */
         h1 { color: #2ECC40 !important; text-align: center; }
+        h3 { color: #FFFFFF !important; font-weight: 600 !important; }
+
+        /* Custom Card Component */
+        .glass-card, div[data-testid="stVerticalBlockBorderWrapper"] > div {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: transform 0.2s ease;
+        }
+        .glass-card:hover { border-color: rgba(46, 204, 64, 0.3); }
+
+        /* KPI Styles */
+        .kpi-box { text-align: center; padding: 10px; }
+        .kpi-label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+        .kpi-value { font-size: 1.8rem; font-weight: bold; color: #2ECC40; margin: 5px 0; }
+
+        /* Buttons */
         button[kind="primary"] { background-color: #2ECC40 !important; color: #122023 !important; border: none; font-weight: bold; }
-        button[kind="secondary"] { border: 1px solid #E01B24 !important; color: #E01B24 !important; background-color: transparent; }
+        button[kind="secondary"] { border: 1px solid rgba(224, 27, 36, 0.5) !important; color: #E01B24 !important; background-color: transparent; }
         input:focus { border-color: #2ECC40 !important; box-shadow: 0 0 10px rgba(46, 204, 64, 0.4) !important; }
 
         .stTabs [data-baseweb="tab-list"] {
@@ -42,9 +63,20 @@ def apply_custom_css():
             border-bottom: 3px solid #2ECC40 !important;
             box-shadow: 0 4px 15px rgba(46, 204, 64, 0.4), 0 0 30px rgba(46, 204, 64, 0.2);
         }
+        /* Relocate Plotly Modebar (Download/Zoom) to Bottom Right */
+        .js-plotly-plot .modebar-container {
+            top: auto !important;
+            bottom: 0px !important;
+            right: 10px !important;
+        }
         @media (max-width: 640px) {
-            .stTabs [data-baseweb="tab-list"] { justify-content: center; }
-            .stTabs [data-baseweb="tab"] { font-size: 0.8rem; flex-grow: 1; }
+            .block-container { padding-left: 0.7rem !important; padding-right: 0.7rem !important; }
+            .stTabs [data-baseweb="tab-list"] {
+                justify-content: flex-start !important;
+                overflow-x: auto !important;
+                gap: 4px !important;
+            }
+            .stTabs [data-baseweb="tab"] { font-size: 0.75rem; flex-shrink: 0; padding: 10px 12px; }
         }
     </style>
     """

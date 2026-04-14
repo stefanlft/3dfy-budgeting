@@ -6,6 +6,7 @@ import random
 import numpy as np
 import time
 from sklearn.linear_model import Ridge
+from prophet import Prophet
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
 import hashlib
@@ -213,9 +214,49 @@ def add_user_dialog():
         st.session_state.show_add_user = False # CLEAR TRIGGER
         st.rerun()
 
+@st.dialog("Fulfill Order")
+def fulfill_order_dialog(order_id, product, price):
+    st.write(f"Complete order for **{product}**?")
+    st.write(f"This will move the amount of **{price:.2f} RON** into the Ledger.")
+    if st.button("Confirm Fulfill", type="primary", width="stretch"):
+        # Add to ledger
+        db.ledger_add_entry(datetime.now().strftime("%Y-%m-%d"), "Inbound", "Product Sale", f"Order Fulfill: {product}", price)
+        # Mark order as complete
+        db.orders_complete_entry(order_id)
+        st.toast("Order fulfilled and recorded!", icon="✅")
+        time.sleep(1)
+        st.rerun()
+
+@st.dialog("➕ Register New Order")
+def register_order_dialog():
+    c_name, c_contact = st.columns(2)
+    ord_name = c_name.text_input("Customer Name", placeholder="e.g. John Doe")
+    ord_contact = c_contact.text_input("Insta / Phone", placeholder="@username or 07xx...")
+
+    ord_product = st.text_area("Product Details", placeholder="Describe the print, scale, color, or special requirements...", height=100)
+
+    c3, c4, c5 = st.columns(3)
+    ord_price = c3.number_input("Final Price (RON)", min_value=0.0, step=10.0)
+    ord_deadline = c4.date_input("Deadline", datetime.now() + timedelta(days=7))
+    ord_method = c5.selectbox("Delivery Method", ["Personal", "Sameday", "FAN", "DHL", "DPD", "FedEx", "UPS", "Other"])
+
+    ord_location = st.text_input("Location to Deliver", placeholder="Full address or pickup point")
+
+    if st.button("Save Order to Queue", type="primary", width="stretch"):
+        if ord_product and ord_name:
+            db.orders_add_entry(ord_product, ord_name, ord_contact, ord_price,
+                               ord_deadline.strftime("%Y-%m-%d"),
+                               ord_location, ord_method)
+            st.toast("Order Registered!", icon="📦")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("Please provide Product details and Customer name.")
+
+
 # --- DASHBOARD ---
 # Dynamic tab creation based on user role
-tabs_to_show = ["📊 Overview", "📑 All Transactions", "➕ Quick Entry", "🖨️ Cost Calculator"]
+tabs_to_show = ["📊 Overview", "📦 Current Orders", "🖨️ Cost Calculator", "➕ Quick Entry", "📑 All Transactions"]
 if st.session_state.current_user == "admin":
     tabs_to_show.append("👤 User Management")
 
@@ -232,16 +273,22 @@ with all_tabs[0]: # Overview
 
         # 2. Display Metrics Row
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Revenue", f"{rev:,.2f} RON")
-        m2.metric("Expenses", f"{exp:,.2f} RON")
+        metrics = [
+            ("Revenue", f"{rev:,.0f} RON", "#FFFFFF"),
+            ("Expenses", f"{exp:,.0f} RON", "#E01B24"),
+            ("Net Profit", f"{net:,.0f} RON", "#2ECC40"),
+            ("Margin", f"{margin:.1f}%", "#2196F3")
+        ]
 
-        m3.metric("Net Profit", f"{net:,.2f} RON",
-                  delta="Positive" if net >= 0 else "Negative",
-                  delta_color="normal" if net >= 0 else "inverse")
+        for col, (label, val, color) in zip([m1, m2, m3, m4], metrics):
+            col.markdown(f"""
+                <div class="glass-card kpi-box">
+                    <div class="kpi-label">{label}</div>
+                    <div class="kpi-value" style="color: {color}">{val}</div>
+                </div>
+            """, unsafe_allow_html=True)
 
-        m4.metric("Profit Margin", f"{margin:.1f}%",
-                  delta="Healthy" if margin > 20 else "Low",
-                  delta_color="normal" if margin > 20 else "inverse")
+        st.write("<br>", unsafe_allow_html=True)
 
         # 3. Charting Logic
         df_sorted = df.sort_values('date')
@@ -255,70 +302,104 @@ with all_tabs[0]: # Overview
         fig = go.Figure(go.Scatter(
             x=df_sorted['date'], y=df_sorted['balance'],
             fill='tozeroy', line=dict(color=trend_color, width=3),
-            fillcolor=fill_color
+            fillcolor=fill_color,
+            name="Current Balance",
+            hovertemplate="Balance: %{y:.2f} RON<extra></extra>",
+            showlegend=True
         ))
 
         fig.update_layout(
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            height=350, margin=dict(l=0, r=0, t=10, b=0),
+            height=400, margin=dict(l=0, r=0, t=40, b=40),
             xaxis=dict(showgrid=False, color="#FFFFFF"),
             yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="#FFFFFF"),
-            hovermode="x unified"
+            hovermode="x unified",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=10, color="#FFFFFF")
+            )
         )
 
         # 4. ML Prediction Logic (Linear Regression)
-        pred_days = st.slider("Forecast Horizon (Days)", min_value=7, max_value=365, value=14)
+        chart_container = st.container()
+
+        pred_days = st.slider("Forecast Horizon (Days)", min_value=7, max_value=365, value=config.DEFAULT_PREDICTION_DAYS)
 
         projected_profit = 0.0
         if len(df_sorted) > 2:
             # --- SMART FEATURE ENGINEERING ---
-            # We use ordinal date and day of week to capture seasonality
-            df_sorted['day_of_week'] = df_sorted['date'].dt.dayofweek
-            x = np.column_stack([
-                df_sorted['date'].map(datetime.toordinal).values,
-                df_sorted['day_of_week'].values
-            ])
-            y = df_sorted['balance'].values
+            # Prepare data for Prophet: requires 'ds' (datetime) and 'y' (value)
+            prophet_df = df_sorted[['date', 'balance']].rename(columns={'date': 'ds', 'balance': 'y'})
 
-            # --- RECENCY BIAS (The "Smarter" Part) ---
-            # Calculate weights: give more weight to recent transactions
-            # The most recent data point has weight 1.0, older data decays exponentially
-            max_date = df_sorted['date'].map(datetime.toordinal).max()
-            # Decay factor: 0.01 means data from 100 days ago has ~36% influence
-            weights = np.exp(-0.01 * (max_date - x[:, 0]))
+            # Initialize and fit Prophet model
+            # Prophet automatically handles trends, seasonality (weekly, yearly), and holidays
+            # changepoint_prior_scale can be adjusted to make the trend more flexible
+            model = Prophet(
+                growth='linear',
+                seasonality_mode='additive',
+                weekly_seasonality=True,
+                daily_seasonality=False, # Daily seasonality might be too granular for cumulative balance
+                yearly_seasonality=False, # Requires more than a year of data
+                changepoint_prior_scale=0.05 # Default is 0.05, can increase for more flexibility
+            )
+            model.fit(prophet_df)
 
-            # Use Ridge Regression with Polynomial Features
-            # Ridge (L2 regularization) prevents the model from overreacting to outliers
-            model = make_pipeline(PolynomialFeatures(degree=2), Ridge(alpha=1.0))
-            model.fit(x, y, ridge__sample_weight=weights)
+            # Create a DataFrame with future dates for prediction
+            future = model.make_future_dataframe(periods=pred_days, include_history=False)
+            forecast = model.predict(future)
 
-            # Generate future dates based on user selection
-            last_date = df_sorted['date'].max()
-
-            future_dates = [last_date + timedelta(days=i) for i in range(1, pred_days + 1)]
-
-            future_x = np.column_stack([
-                [d.toordinal() for d in future_dates],
-                [d.weekday() for d in future_dates]
-            ])
-            future_y = model.predict(future_x)
-
+            # Combine historical and forecasted data for plotting
+            # Ensure the prediction starts from the last actual data point
+            plot_dates = pd.concat([df_sorted['date'], forecast['ds']])
+            plot_yhat = pd.concat([df_sorted['balance'], forecast['yhat']])
+            plot_yhat_lower = pd.concat([df_sorted['balance'], forecast['yhat_lower']])
+            plot_yhat_upper = pd.concat([df_sorted['balance'], forecast['yhat_upper']])
 
             # Calculate expected profit over the selected period based on the trend
-            projected_profit = future_y[-1] - y[-1]
+            last_actual_balance = df_sorted['balance'].iloc[-1]
+            predicted_final_balance = forecast['yhat'].iloc[-1]
+            projected_profit = predicted_final_balance - last_actual_balance
 
             # Add prediction trace to the figure
             fig.add_trace(go.Scatter(
-                x=[df_sorted['date'].iloc[-1]] + future_dates,
-                y=[df_sorted['balance'].iloc[-1]] + list(future_y),
+                x=plot_dates,
+                y=plot_yhat,
                 name=f"ML Trend ({pred_days}d)",
                 line=dict(color="#FFC107", width=2, dash='dash'),
-                fillcolor="rgba(255, 193, 7, 0.1)",
-                fill="tozeroy",
+                # Removed fill="tozeroy" for the prediction line itself
                 hovertemplate="Predicted: %{y:.2f} RON<extra></extra>"
             ))
 
-        st.plotly_chart(fig, width="stretch")
+            # Add confidence interval as a shaded area
+            fig.add_trace(go.Scatter(
+                x=plot_dates,
+                y=plot_yhat_upper,
+                mode='lines',
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo='skip' # Don't show hover for this invisible line
+            ))
+            fig.add_trace(go.Scatter(
+                x=plot_dates,
+                y=plot_yhat_lower,
+                mode='lines',
+                line=dict(width=0),
+                fill='tonexty', # Fills the area between this trace and the previous one (yhat_upper)
+                fillcolor="rgba(255, 193, 7, 0.1)",
+                name='Confidence Interval',
+                hovertemplate="Lower: %{y:.2f} RON<extra></extra>"
+            ))
+
+        with chart_container:
+            st.plotly_chart(
+                fig,
+                width="stretch",
+                config={'displaylogo': False, 'modeBarButtonsToRemove': ['lasso2d', 'select2d']}
+            )
 
         # 5. Branded Forecasts
         f_col1, f_col2 = st.columns(2)
@@ -340,19 +421,109 @@ with all_tabs[0]: # Overview
             </div>
             """, unsafe_allow_html=True)
 
-with all_tabs[1]: # Transactions
+with all_tabs[4]: # Transactions
+    st.markdown("### 📑 Transaction Ledger")
     df = db.ledger_get_data()
-    if not df.empty:
-        def color_t(v): return "background-color: rgba(46,204,64,0.12); color: #2ECC40;" if v=="Inbound" else "background-color: rgba(224,27,36,0.12); color: #E01B24;"
-        st.dataframe(df.sort_values('id', ascending=False).style.map(color_t, subset=['type']), width='stretch', hide_index=True)
-        st.divider()
-        c_id, c_btn = st.columns([3, 1])
-        with c_id: id_in = st.number_input("Enter ID:", step=1, min_value=0)
-        with c_btn:
-            st.write(" ")
-            if st.button("Delete", type="secondary", width='stretch'): confirm_delete_dialog(id_in)
 
-with all_tabs[2]: # Quick Entry
+    if not df.empty:
+        # 1. Explicit Filtering Interface
+        with st.container(border=True):
+            f1, f2 = st.columns([2, 1])
+            search_desc = f1.text_input("🔍 Search Description", placeholder="Filter by transaction details...")
+            filter_type = f2.selectbox("Type", ["All", "Inbound", "Outbound"])
+
+            f3, f4 = st.columns([2, 1])
+            unique_cats = sorted(df['category'].unique().tolist())
+            filter_cats = f3.multiselect("Categories", options=unique_cats)
+
+            min_d, max_d = df['date'].min().date(), df['date'].max().date()
+            date_range = f4.date_input("Date Range", value=(min_d, max_d))
+
+        filtered_df = df.copy()
+
+        if search_desc:
+            filtered_df = filtered_df[filtered_df['description'].str.contains(search_desc, case=False, na=False)]
+        if filter_type != "All":
+            filtered_df = filtered_df[filtered_df['type'] == filter_type]
+        if filter_cats:
+            filtered_df = filtered_df[filtered_df['category'].isin(filter_cats)]
+
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = filtered_df[(filtered_df['date'].dt.date >= start_date) & (filtered_df['date'].dt.date <= end_date)]
+
+        def color_t(v):
+            return "background-color: rgba(46,204,64,0.12); color: #2ECC40;" if v=="Inbound" else "background-color: rgba(224,27,36,0.12); color: #E01B24;"
+
+        # 2. Render Styled Ledger
+        st.dataframe(
+            filtered_df.sort_values('date', ascending=False).style.map(color_t, subset=['type']),
+            width="stretch",
+            hide_index=True
+        )
+
+        # 3. Management Section (Glass Card)
+        st.write("<br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("<h4 style='margin:0 0 1rem 0; color:#FFFFFF;'>🗑️ Entry Management</h4>", unsafe_allow_html=True)
+            c_id, c_btn = st.columns([3, 1])
+            id_in = c_id.number_input("Transaction ID to remove:", step=1, min_value=0, key="ledger_del_id")
+            if c_btn.button("Purge Entry", type="secondary", width="stretch", key="ledger_del_btn"):
+                confirm_delete_dialog(id_in)
+    else:
+        st.info("No transaction history available.")
+
+with all_tabs[1]: # Current Orders
+    st.markdown("### 📦 Active Order Management")
+
+    if st.button("➕ Register New Order", type="primary", width="stretch"):
+        register_order_dialog()
+
+    st.divider()
+    orders_data = db.orders_get_active()
+    if not orders_data.empty:
+        status_flow = ["Placed", "Printing", "Packing", "Delivering"]
+        for _, row in orders_data.iterrows():
+            status = row['status']
+            status_colors = {"Placed": "#888", "Printing": "#2196F3", "Packing": "#FF9800", "Delivering": "#9C27B0"}
+
+            st.markdown(f"""
+                <div class="glass-card">
+                    <div style="display: flex; justify-content: space-between; align-items: start;">
+                        <div>
+                            <h4 style="margin:0; color:#2ECC40;">{row['customer_name']}</h4>
+                            <p style="margin:0; font-size:0.9rem; opacity:0.8;">{row['product']}</p>
+                        </div>
+                        <span style="background:{status_colors.get(status, '#555')}; padding:4px 12px; border-radius:20px; font-size:0.7rem; font-weight:bold;">{status.upper()}</span>
+                    </div>
+                    <div style="margin-top:10px; font-size:0.85rem; color:#888;">
+                        📅 Due: {row['deadline']} | 📞 {row['contact']} | 📍 {row['location']}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            cols = st.columns([5, 1, 1])
+            with cols[1]:
+                    # Logic to move to next status or fulfill
+                    if status in status_flow:
+                        current_idx = status_flow.index(status)
+                        if current_idx < len(status_flow) - 1:
+                            next_status = status_flow[current_idx + 1]
+                            if st.button(f"Next: {next_status}", key=f"nxt_{row['id']}", width="stretch"):
+                                db.orders_update_status(row['id'], next_status)
+                                st.rerun()
+                        else:
+                            if st.button("Fulfill", key=f"ful_{row['id']}", type="primary", width="stretch"):
+                                fulfill_order_dialog(row['id'], row['product'], row['price'])
+            with cols[2]:
+                    if st.button("🗑️", key=f"can_{row['id']}", type="secondary", width="stretch"):
+                        db.orders_delete_entry(row['id'])
+                        st.rerun()
+            st.write("<br>", unsafe_allow_html=True)
+    else:
+        st.info("No active orders found in the queue.")
+
+with all_tabs[3]: # Quick Entry
     in_cats, out_cats = ["Product Sale", "Custom Print", "Donation", "Subscription", "Other"], ["Filament", "Product Part", "Transport", "Software", "Marketing", "Rent", "Cash Out", "Salary", "Misc"]
     c1, c2 = st.columns(2); t_type = c1.radio("Direction", ["Inbound", "Outbound"], horizontal=True); t_date = c2.date_input("Date", datetime.now())
     c3, c4, c5 = st.columns(3); cat = c3.selectbox("Category", options=in_cats if t_type=="Inbound" else out_cats); desc = c4.text_input("Description"); amt = c5.number_input("Amount (RON)", min_value=0.0)
@@ -361,7 +532,7 @@ with all_tabs[2]: # Quick Entry
             db.ledger_add_entry(t_date.strftime("%Y-%m-%d"), t_type, cat, desc, amt)
             st.toast("Saved!", icon="🚀"); time.sleep(1); st.rerun()
 
-with all_tabs[3]: # 🖨️ Cost Calculator
+with all_tabs[2]: # 🖨️ Cost Calculator
     st.markdown("### 🖨️ 3D Print Price Calculator")
 
     # --- CALLBACKS ---
@@ -466,7 +637,7 @@ with all_tabs[3]: # 🖨️ Cost Calculator
 
 # --- USER MANAGEMENT TAB (ADMIN ONLY) ---
 if st.session_state.current_user == "admin":
-    with all_tabs[4]:
+    with all_tabs[5]:
         # --- 1. DIALOG ORCHESTRATOR ---
         if st.session_state.get("active_manage_user"):
             user_management_dialog(st.session_state.active_manage_user)

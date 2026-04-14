@@ -23,6 +23,9 @@ def init_db(deb):
                     date TEXT, type TEXT, category TEXT, description TEXT, amount REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS users
                     (username TEXT PRIMARY KEY, password TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS orders
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product TEXT, customer_name TEXT, contact TEXT, price REAL, deadline TEXT, location TEXT, delivery_method TEXT, status TEXT)''')
 
         # Default User: uses the hash from your .env file
         c.execute("SELECT * FROM users WHERE username='admin'")
@@ -188,3 +191,62 @@ def user_get_list():
         response = supabase.table("users").select("username").execute()
         df = pd.DataFrame(response.data)
     return df
+
+def orders_get_active():
+    """Fetches all orders that are not marked as Completed."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM orders WHERE status != 'Completed'", conn)
+        conn.close()
+    else:
+        response = supabase.table("orders").select("*").neq("status", "Completed").execute()
+        df = pd.DataFrame(response.data)
+    return df
+
+def orders_add_entry(product, customer_name, contact, price, deadline, location, delivery_method):
+    """Registers a new order in the system."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute(
+            "INSERT INTO orders (product, customer_name, contact, price, deadline, location, delivery_method, status) VALUES (?,?,?,?,?,?,?,?)",
+            (product, customer_name, contact, price, deadline, location, delivery_method, 'Placed')
+        )
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("orders").insert({
+            "product": product, "customer_name": customer_name,
+            "contact": contact, "price": price,
+            "deadline": deadline, "location": location,
+            "delivery_method": delivery_method, "status": 'Placed'
+        }).execute()
+
+def orders_update_status(order_id, new_status):
+    """Updates the status of an existing order."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("UPDATE orders SET status = ? WHERE id = ?", (new_status, order_id))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("orders").update({"status": new_status}).eq("id", order_id).execute()
+
+def orders_complete_entry(order_id):
+    """Marks an order as completed."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("UPDATE orders SET status = 'Completed' WHERE id = ?", (order_id,))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("orders").update({"status": "Completed"}).eq("id", order_id).execute()
+
+def orders_delete_entry(order_id):
+    """Permanently deletes an order."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("orders").delete().eq("id", order_id).execute()
