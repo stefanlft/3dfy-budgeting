@@ -28,31 +28,22 @@ if config.DEBUG_MODE:
     st.session_state.current_user = "admin"
 
 # --- PERSISTENT AUTH LOGIC ---
+# The CookieController needs a moment to sync with the browser.
+# It returns None during handshake, and a dict (can be empty) once ready.
+if controller.getAll() is None:
+    time.sleep(0.1)
+    st.rerun()
+
 if 'authenticated' not in st.session_state:
-    # Get all cookies to check if the component has finished initializing
-    all_cookies = controller.getAll()
-
-    # If the component hasn't sent data yet, it often returns an empty dict or None
-    # We use a placeholder in session_state to prevent infinite loops
-    if not all_cookies and 'init_checked' not in st.session_state:
-        st.session_state.init_checked = True
-        time.sleep(0.1) # Tiny bridge for JS-Python sync
-        st.rerun()
-
-    if not all_cookies:
-        st.session_state.authenticated = False
-        st.rerun()
-
     token = controller.get('remember_me')
-
     if token:
         user_from_token = auth_utils.decode_access_token(token)
         if user_from_token:
             st.session_state.authenticated = True
             st.session_state.current_user = user_from_token
         else:
-            controller.remove('remember_me')
             st.session_state.authenticated = False
+            controller.remove('remember_me')
     else:
         st.session_state.authenticated = False
 
