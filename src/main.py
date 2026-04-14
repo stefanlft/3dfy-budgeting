@@ -220,15 +220,42 @@ def fulfill_order_dialog(order_id, product, price):
         st.rerun()
 
 @st.dialog("➕ Register New Order")
-def register_order_dialog():
+def register_order_dialog(initial_product="", initial_price=0.0):
+    # Initialize session state for dialog inputs if it's the first run or forced reset
+    if "ord_f_desc" not in st.session_state or st.session_state.get("ord_init"):
+        st.session_state.ord_f_desc = initial_product
+        st.session_state.ord_f_price = float(initial_price)
+        st.session_state.ord_init = False
+
     c_name, c_contact = st.columns(2)
     ord_name = c_name.text_input("Customer Name", placeholder="e.g. John Doe")
     ord_contact = c_contact.text_input("Insta / Phone", placeholder="@username or 07xx...")
 
-    ord_product = st.text_area("Product Details", placeholder="Describe the print, scale, color, or special requirements...", height=100)
+    ord_product = st.text_area("Product Details", key="ord_f_desc", placeholder="Describe the print, scale, color, or special requirements...", height=100)
+
+    # --- Catalogue Assistant Button ---
+    cat_df = db.products_get_all()
+    if not cat_df.empty:
+        def add_to_order_callback():
+            # Access the current selection from session state
+            sel = st.session_state.cat_add_sel
+            match = cat_df[cat_df['name'] == sel].iloc[0]
+            new_entry = f"{match['name']}: {match['description']}"
+
+            # Update session state values before the next rerun
+            if st.session_state.ord_f_desc.strip():
+                st.session_state.ord_f_desc += f"\n\n{new_entry}"
+            else:
+                st.session_state.ord_f_desc = new_entry
+
+            st.session_state.ord_f_price += float(match['base_price'])
+
+        with st.popover("📂 Add from Catalogue", use_container_width=True):
+            st.selectbox("Select product to add:", cat_df['name'].tolist(), key="cat_add_sel")
+            st.button("➕ Add to Order", use_container_width=True, on_click=add_to_order_callback)
 
     c3, c4, c5 = st.columns(3)
-    ord_price = c3.number_input("Final Price (RON)", min_value=0.0, step=10.0)
+    ord_price = c3.number_input("Final Price (RON)", min_value=0.0, key="ord_f_price", step=10.0)
     ord_deadline = c4.date_input("Deadline", datetime.now() + timedelta(days=7))
     ord_method = c5.selectbox("Delivery Method", ["Personal", "Sameday", "FAN", "DHL", "DPD", "FedEx", "UPS", "Other"])
 
@@ -245,10 +272,24 @@ def register_order_dialog():
         else:
             st.error("Please provide Product details and Customer name.")
 
+@st.dialog("🏷️ Add to Catalogue")
+def add_product_dialog(initial_name="", initial_desc="", initial_price=0.0):
+    p_name = st.text_input("Product Name", value=initial_name, placeholder="e.g. Flexi Rex")
+    p_desc = st.text_area("Description", value=initial_desc, placeholder="Materials, print settings, or general info...")
+    p_price = st.number_input("Base Price (RON)", min_value=0.0, value=initial_price, step=5.0)
+
+    if st.button("Save to Catalogue", type="primary", width="stretch"):
+        if p_name:
+            db.products_add_entry(p_name, p_desc, p_price)
+            st.toast(f"{p_name} added!", icon="🏷️")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("Please provide a name.")
 
 # --- DASHBOARD ---
 # Dynamic tab creation based on user role
-tabs_to_show = ["📊 Overview", "📦 Current Orders", "🖨️ Cost Calculator", "➕ Quick Entry", "📑 All Transactions"]
+tabs_to_show = ["📊 Overview", "📦 Current Orders", "🖨️ Cost Calculator", "🏷️ Catalogue", "➕ Quick Entry", "📑 All Transactions"]
 if st.session_state.current_user == "admin":
     tabs_to_show.append("👤 User Management")
 
@@ -419,6 +460,7 @@ with all_tabs[1]: # Current Orders
     c_btn, c_chk = st.columns([3, 1])
     with c_btn:
         if st.button("➕ Register New Order", type="primary", width="stretch"):
+            st.session_state.ord_init = True
             register_order_dialog()
     with c_chk:
         show_completed = st.checkbox("Show Previous Orders", help="Include fulfilled orders in the list")
@@ -572,11 +614,42 @@ with all_tabs[2]: # 🖨️ Cost Calculator
         """, unsafe_allow_html=True)
     res3.metric("Your Profit", f"{profit:.2f} RON")
 
-    # Trigger the dialog instead of a direct save
-    if st.button("🚀 Push to Ledger", width="stretch", type="primary"):
-        push_to_ledger_dialog(f_weight, p_time, suggested_price)
+    # --- ACTIONS ---
+    st.write("<br>", unsafe_allow_html=True)
+    c_act1, c_act2 = st.columns(2)
 
-with all_tabs[3]: # Quick Entry
+    if c_act1.button("📦 Push to Orders", use_container_width=True, type="primary"):
+        st.session_state.ord_init = True
+        register_order_dialog(initial_product=f"Custom Print ({f_weight}g / {p_time}h)", initial_price=float(suggested_price))
+
+    if c_act2.button("🏷️ Push to Catalogue", use_container_width=True, type="primary"):
+        add_product_dialog(initial_desc=f"Calculated specs: {f_weight}g weight, {p_time}h print time.", initial_price=float(suggested_price))
+
+
+with all_tabs[3]: # 🏷️ Catalogue
+    st.markdown("### 🏷️ Product Catalogue")
+    if st.button("➕ Add New Product", type="primary"):
+        add_product_dialog()
+
+    st.divider()
+    cat_df = db.products_get_all()
+    if not cat_df.empty:
+        for _, row in cat_df.iterrows():
+            with st.container(border=True):
+                c_info, c_act = st.columns([4, 1])
+                with c_info:
+                    st.markdown(f"#### {row['name']}")
+                    st.write(row['description'])
+                    st.markdown(f"**Base Price:** {row['base_price']:.2f} RON")
+                with c_act:
+                    if st.button("🗑️ Delete", key=f"del_prod_{row['id']}", type="secondary", use_container_width=True):
+                        db.products_delete_entry(row['id'])
+                        st.rerun()
+    else:
+        st.info("Your catalogue is empty. Add products to quickly reuse descriptions and prices.")
+
+
+with all_tabs[4]: # Quick Entry
     in_cats, out_cats = ["Product Sale", "Custom Print", "Donation", "Subscription", "Other"], ["Filament", "Product Part", "Transport", "Software", "Marketing", "Rent", "Cash Out", "Salary", "Misc"]
     c1, c2 = st.columns(2); t_type = c1.radio("Direction", ["Inbound", "Outbound"], horizontal=True); t_date = c2.date_input("Date", datetime.now())
     c3, c4, c5 = st.columns(3); cat = c3.selectbox("Category", options=in_cats if t_type=="Inbound" else out_cats); desc = c4.text_input("Description"); amt = c5.number_input("Amount (RON)", min_value=0.0)
@@ -585,7 +658,7 @@ with all_tabs[3]: # Quick Entry
             db.ledger_add_entry(t_date.strftime("%Y-%m-%d"), t_type, cat, desc, amt)
             st.toast("Saved!", icon="🚀"); time.sleep(1); st.rerun()
 
-with all_tabs[4]: # Transactions
+with all_tabs[5]: # Transactions
     st.markdown("### 📑 Transaction Ledger")
     df = db.ledger_get_data()
 
@@ -639,7 +712,7 @@ with all_tabs[4]: # Transactions
 
 # --- USER MANAGEMENT TAB (ADMIN ONLY) ---
 if st.session_state.current_user == "admin":
-    with all_tabs[5]:
+    with all_tabs[6]:
         # --- 1. DIALOG ORCHESTRATOR ---
         if st.session_state.get("active_manage_user"):
             user_management_dialog(st.session_state.active_manage_user)

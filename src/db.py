@@ -28,6 +28,9 @@ def init_db(deb):
         c.execute('''CREATE TABLE IF NOT EXISTS orders
                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
                     product TEXT, customer_name TEXT, contact TEXT, price REAL, deadline TEXT, location TEXT, delivery_method TEXT, status TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS products
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT, description TEXT, base_price REAL)''')
 
         # Default User: uses the hash from your .env file
         c.execute("SELECT * FROM users WHERE username='admin'")
@@ -263,3 +266,34 @@ def orders_delete_entry(order_id):
         conn.close()
     else:
         supabase.table("orders").delete().eq("id", order_id).execute()
+
+def products_get_all():
+    """Fetches all products from the catalogue."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM products", conn)
+        conn.close()
+    else:
+        response = supabase.table("products").select("*").execute()
+        df = pd.DataFrame(response.data)
+    return df
+
+def products_add_entry(name, description, base_price):
+    """Adds a new item to the product catalogue."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("INSERT INTO products (name, description, base_price) VALUES (?,?,?)", (name, description, base_price))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("products").insert({"name": name, "description": description, "base_price": base_price}).execute()
+
+def products_delete_entry(product_id):
+    """Removes a product from the catalogue."""
+    if DEBUG:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        conn.commit()
+        conn.close()
+    else:
+        supabase.table("products").delete().eq("id", product_id).execute()
