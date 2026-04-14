@@ -31,7 +31,7 @@ if config.DEBUG_MODE:
 # The CookieController needs a moment to sync with the browser.
 # It returns None during handshake, and a dict (can be empty) once ready.
 if controller.getAll() is None:
-    time.sleep(0.1)
+    time.sleep(0.5) # Increased for server-side latency
     st.rerun()
 
 if 'authenticated' not in st.session_state:
@@ -65,13 +65,14 @@ if not st.session_state.authenticated:
 
                 if remember_me:
                     token = auth_utils.create_access_token(user)
-
                     controller.set('remember_me', token, max_age=2592000)
-
-                    time.sleep(0.2)
+                    # Higher sleep ensures the JS component has time to
+                    # write the cookie before the rerun interrupts the script.
+                    time.sleep(0.5)
                 st.rerun()
             else:
                 st.error("Invalid credentials")
+        st.caption(f"System Version: {config.VERSION}")
     st.stop()
 
 # --- HEADER & LOGOUT ---
